@@ -1,4 +1,4 @@
-# Portfolio1_NLPTimeSeriesAnalysis
+# Portfolio: NLP/TimeSeries Analysis of European Central Bank communication with the media
 
 This is work that I have done for  my PhD, more specifically for the paper "Guiding or Following the Crowd? Strategic communication as regulatory and reputational strategy" by myself (Moritz Müller) and Caelesta Braun. All the coding and statistical analysis that you see in this document was done by me. 
 
