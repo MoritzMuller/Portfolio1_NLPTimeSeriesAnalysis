@@ -1,0 +1,843 @@
+---
+title: "Portfolio: How does the European Central Bank influence public media reporting? (time series analysis, NLP, web scraping, data wrangling)"
+author: "Moritz Müller"
+date: "October 2, 2022"
+output: 
+  html_document:
+    code_folding: hide
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy=TRUE)
+```
+# Required packages
+```{r echo=T, results='hide'} 
+library(tm.plugin.factiva)
+library(tm)
+library(dplyr)
+library(quanteda)
+library(tidytext)
+library(tidyverse)
+library(lubridate)
+library(ldatuning)
+library(topicmodels)
+library(parallel)
+library(vars)
+library(tseries)
+library(zoo)
+library(boot)
+```
+
+This is work that I have done for  my PhD, more specifically for the paper "Guiding or Following the Crowd? Strategic communication as regulatory and reputational strategy" by myself (Moritz Müller) and Caelesta Braun. All the coding and statistical analysis that you see in this document was done by me. 
+
+Due to copyright issues, I cannot share the newsletter dataset - however, I will show every step of the analysis and provide glimpses into the various decisions, cleaning steps, and other decisions that were made. 
+
+The basic question of the paper is the following: Does the European Central Bank influence the topics that the news media reports about, or does it work the other way around? This is a hugely relevant question, as the ECB relies on good newspaper reporting, particularly duing financial crises: Newspapers drastically influence public sentiment regarding financial stability. If the public falls into panic, the financial system (stock markets, bond markets, pension systems, etc.) will follow. 
+
+To do this, I combine natural language processing and time series analysis. More specifically, I have scraped all communication of the European Central Bank from their website (via Octoparse). This includes Interviews, monetary decisions, Press Conference transcripts, Speeches, and Press releases. For the news media data, I have scraped all available newspaper articles from major Euopean outlets that contain the word "ECB" or "European Central Bank".
+
+I followed the following strategy: 
+1. Clean all data.
+2. Enrich/ wrangle the data wherever possible (i.e., add other relevant datapoints).
+3. Fit topic models to the ECB corpus to extract relevant topics from the text.
+4. Create a dictionary of words that capture the the three most relevant topics, but across source contexts. --> Applying the ECB topic model to the newspaper corpus is not feasible, since the newspapers tend to use different wording for simliar topics than the European Central Bank would. A dictionary is technologically less advanced, but proved to be a more reliable tool than topic models. At the same time, I still use the topic models to identify key terms.
+5. Run the dictionary on both the ECB and newspaper corpus. This results of 6 time series: 3 topics in both text corpora.
+6. Perform time series analysis, more specifically VAR models and impulse-response functions. This is to test whether the time series of one topic in one text corpus influences the time series of the same topic in the other corpus.
+
+Firstly, we load the required data and manipulate it according to our requirements for further analyses.
+# 1. Load and format data
+## 1.1. Scraped ECB data
+
+```{r}
+# ### Import and create dataset
+# Interviews<-read.csv("data/ECB_Interviews_CSV.csv", encoding="UTF-8", strip.white = TRUE, header=TRUE)
+# MDecisions <- read.csv("data/ECB_MonetaryDecision_CSV.csv", encoding="UTF-8", strip.white = TRUE, header=TRUE)
+# ODecisions <- read.csv("data/ECB_OtherDecisions_CSV.csv", encoding="UTF-8", strip.white = TRUE, header=TRUE)
+# PressConferences <- read.csv("data/ECB_Pressconferences_CSV.csv", encoding="UTF-8", strip.white = TRUE, header=TRUE)
+# Speeches <- read.csv("data/ECB_Speeches_CSV_1.csv", encoding="UTF-8", strip.white = TRUE, header=TRUE)
+# Speeches2 <- read.csv("data/ECB_Speeches_CSV_2.csv", encoding="UTF-8", strip.white = TRUE, header=TRUE)
+# PressReleases <- read.csv("data/ECB_Pressreleases_CSV.csv", encoding="UTF-8", strip.white = TRUE, header=TRUE)
+# 
+# # Add Column of Type
+# 
+# I <- data.frame(Interviews, doc_id=paste("Interview_",seq.int(nrow(Interviews)),sep=""), type="Interview")
+# MD <- data.frame(MDecisions, doc_id=paste("MDecisions_",seq.int(nrow(MDecisions)),sep=""), type="Monetary_Decisions")
+# OD <- data.frame(ODecisions, doc_id=paste("ODecisions_",seq.int(nrow(ODecisions)),sep=""), type="Other_Decisions")
+# PC <- data.frame(PressConferences, doc_id=paste("PressConferences_",seq.int(nrow(PressConferences)),sep=""), type="Press_Conferences", Language="English")
+# names(PC)[2] <- "Title"
+# S1 <- data.frame(Speeches, doc_id=paste("Speeches_",seq.int(nrow(Speeches)),sep=""), type="Speeches")
+# names(S1)[1] <- "X.U.FEFF.Time"
+# names(S1)[2] <- "Description1"
+# S2 <- data.frame(Speeches2, doc_id=paste("Speeches2_",seq.int(nrow(Speeches2)),sep=""), type="Speeches")
+# names(S2)[1] <- "X.U.FEFF.Time"
+# names(S2)[2] <- "Description1"
+# PR <- data.frame(PressReleases, doc_id=paste("PressReleases_",seq.int(nrow(PressReleases)),sep=""), type="Press_Releases")
+# PR <- PR[!(PR$Title == "Monetary policy decisions"),]
+# PR <- PR[!(PR$Title == "Monetary Policy Decisions"),]
+# 
+# # Merge Datasets into one
+# Joined <- merge(x=I, y=PC, by = c("X.U.FEFF.Time", "Title", "Text", "Language", "doc_id", "type"), all.x=TRUE, all.y = TRUE)
+# ### Joined <- merge(x=Joined, y=OD, by = c("X.U.FEFF.Time", "Title", "Text", "Language", "doc_id", "type"), all.x=TRUE, all.y = TRUE)
+# ### Joined <- merge(x=Joined, y=PC, by = c("X.U.FEFF.Time", "Title", "Text", "Language", "doc_id", "type"), all.x=TRUE, all.y = TRUE)
+# Joined <- merge(x=Joined, y=S1, by = c("X.U.FEFF.Time", "Text", "Language", "Description1", "Description2", "doc_id", "type"), all.x=TRUE, all.y = TRUE)
+# Joined <- merge(x=Joined, y=S2, by = c("X.U.FEFF.Time", "Text", "Language", "Description1", "Description2", "doc_id", "type"), all.x=TRUE, all.y = TRUE)
+# Joined <- merge(x=Joined, y=PR, by = c("X.U.FEFF.Time", "Title", "Text", "Language", "doc_id", "type"), all.x=TRUE, all.y = TRUE)
+# 
+# # Clean Dataset
+# 
+# Joined$Description <- paste(Joined$Description1, Joined$Description2)
+# Joined$Description1 <- NULL
+# Joined$Description2 <- NULL
+# Joined$Description[Joined$Description == "NA NA"] <- "NA"
+# 
+# names(Joined)[3] <- "text"
+# names(Joined)[2] <- "heading"
+# names(Joined)[1] <- "datetimestamp"
+# names(Joined)[4] <- "language"
+# names(Joined)[7] <- "description"
+# 
+# #Joined$datetimestamp <- as.POSIXct(Joined$datetimestamp, tz= "", format = "%d %B %Y")
+# Joined = Joined[,c(5,3,1,2,4,6,7)]
+# 
+# # only keep documents in English
+# Joined = Joined[Joined$language == "English", ]
+# Joined = Joined[!Joined$text == "", ]
+# Joined = Joined[!Joined$datetimestamp == "", ]
+# 
+# #make sure that text column of the object is character class, otherwise quanteda won't be able to read it
+# Joined$text = as.character(Joined$text)
+# 
+# ##save data
+# #write.csv(Joined, "data/Joined.csv")
+# #If using Joined object, make sure that text column is character string. Loading in the csv with stringsAsFactors = F gets around that as well.
+# 
+# ECB_quanteda = corpus(Joined)
+# tidy = tidy(ECB_quanteda, row_names = T)
+#save(ECB_quanteda, file = "ECB_quanteda")
+# tidy$id = rownames(tidy)
+# 
+# #add dates to tidy for later analyses
+# tidy$date = as.POSIXct(tidy$datetimestamp, tz= "", format = "%d %B %Y")
+# tidy$quarter = lubridate::quarter(tidy$date, with_year=T)
+# tidy$month = format(as.Date(tidy$date), "%Y-%m")
+# tidy$year = format(as.Date(tidy$date), "%Y")
+# 
+# #add leadership variable (1=Duisenberg, 2=Trichet, 3=Draghi)
+# tidy$leadership = "1"
+# tidy$leadership[tidy$month > "2003-11"] = "2"
+# tidy$leadership[tidy$month > "2011-11"] = "3"
+
+#save(tidy, file = "tidy_ecb")
+
+load(file = "tidy_ecb")
+# show summary of data
+summary(tidy)
+```
+
+# 1.2. Load Newspaper Article
+```{r}
+# Read in Factiva html files via tm.plugin.factiva. A list solution is not possible, since tm does not allow the merging of multiple list objects into one Corpus.
+# for (i in c(1:63)){
+#   path = paste0("data/Factiva", i, ".html")
+#   object = Corpus(FactivaSource(path, encoding="UTF8"))
+#   names(object) = paste0("source", i)
+# }
+# # Combine all in one file 
+# Corpus_Media<-c(source1,source2,source3,source4,source5,source6,source7,source8,source9,source10,source11,source12,source13,source14,source15,source16,source17,source18,source19,source20,source21,source22,source23,source24,source25,source26,source27,source28,source29,source30,source31,source32,source33,source34,source35,source36,source37,source38,source39,source40,source41,source42,source43,source44,source45,source46,source47,source48,source49,source50,source51,source52,source53,source54,source55,source56,source57,source58,source59,source60,source61,source62,source63)
+# 
+# # Cut articles with less than 150 words
+# Corpus_Media = tm_filter(Corpus_Media, FUN = function(x) meta(x)[["wordcount"]] > 150)
+# 
+# # Create tidy Corpus to look into it
+# tidy_m <- tidy(Corpus_Media)
+# 
+# # add dates and leadership variables
+# tidy_m$date <- as.POSIXct(tidy_m$datetimestamp, tz= "", format = "%d %B %Y")
+# tidy_m$quarter <- lubridate::quarter(tidy_m$date, with_year=T)
+# tidy_m$month <- format(as.Date(tidy_m$date), "%Y-%m")
+# tidy_m$year <- format(as.Date(tidy_m$date), "%Y")
+# 
+# #add leadership variable (1=Duisenberg, 2=Trichet, 3=Draghi)
+# tidy_m$leadership <- "1"
+# tidy_m$leadership[tidy_m$month > "2003-11"] <- "2"
+# tidy_m$leadership[tidy_m$month > "2011-11"] <- "3"
+
+# #add unique id
+# tidy_m$UID <- c(1:5546)
+
+#save(tidy_m, file = "tidy_newspapers")
+# save same file without text for reproduction
+#write.csv(tidy_m[,c(1:7)], file="newspaper_identifiers.csv")
+load(file = "tidy_newspapers")
+
+# show summary of data
+colnames(tidy_m)
+```
+
+# 2. Frequency of communication
+## 2.1. ECB
+```{r}
+com_freq_type <- tidy %>%
+  filter(year>2000&year<2018) %>% 
+  group_by(type, year) %>%
+  count (id, year) %>%
+  summarize (count = sum(n))
+
+ggplot(com_freq_type, aes(year, count)) + geom_col(show.legend = T, aes(fill = type)) +scale_fill_grey(name = "Type",labels = c( "Interviews", "Press Conferences", "Speeches", "Press Releases"))
+```
+
+## 2.2. Newspapers
+```{r}
+# Frequency of communication
+tidy_m$origin[tidy_m$origin == "Financial Times (FT.Com)"] <- "Financial Times"
+tidy_m$origin[tidy_m$origin == "Guardian Unlimited" | tidy_m$origin == "Guardian.co.uk"] <- "The Guardian"
+tidy_m$origin[tidy_m$origin == "Israel Business Arena" | tidy_m$origin == "The Asian Wall Street Journal"
+              | tidy_m$origin == "El País" | tidy_m$origin == "The Wall Street Journal (Asia Edition)"
+              | tidy_m$origin == "The Wall Street Journal (Europe Edition)" | tidy_m$origin == "The Wall Street Journal (Online and Print)"
+              | tidy_m$origin == "The Wall Street Journal Asia" | tidy_m$origin == "The Wall Street Journal Europe"
+              | tidy_m$origin == "The Wall Street Journal Online" | tidy_m$origin == "WSJ Pro Bankruptcy"
+              | tidy_m$origin == "WSJ Pro Central Banking" | tidy_m$origin == "WSJ Pro Financial Regulation"] <- "The Wall Street Journal"
+
+com_freq_type <- tidy_m %>%
+  filter(year>2000) %>% 
+  group_by(origin,year) %>%
+  count (id, year) %>%
+  summarize (count = sum(n))
+# Plot frequency
+ggplot(com_freq_type, aes(year, count)) + geom_col(show.legend = T, aes(fill = origin))+scale_fill_grey(name = "Origin")
+```
+
+# 3. Topic Models
+## 3.1.1. clean ECB corpus
+```{r}
+# Clean punctuation, remove stopwords, remove numbers, and stem
+load(file = "ECB_quanteda")
+dfm_k <- dfm(ECB_quanteda, remove_punct = T, remove = c(stopwords('english'), stopwords('spanish'), stopwords('german'), "press", "release", "website", "http",
+                                                    "public statement", "twitterfacebooklinkedingooglepluswhatsappemail", 
+                                                    "/t", "\t", "european", "bank", "ecb", "also", "euro", "also", "can", "central"), remove_numbers = T, stem = T, verbose = T)
+dfm_k <- dfm_trim(dfm_k, min_docfreq = 2, verbose = T)
+#delete empty rows
+rowTotals <- apply(dfm_k, 1, sum)
+dfm_s <- dfm_k[rowTotals>0,]
+dfm_s
+```
+## 3.1.2. Pass ECB corpus to topicmodel simulation. Check optimal number of topics
+I ran many different topic model sizes and use multiple metrics to find a good topic amount for the topic model. Finding the right amount of topics is always a weighing exercise between multiple quantitative metrics and making sure that the resulting topic model also makes sense from a human cognition perspective. This means: Do (most) topcis actually make sense. The quantitative metrics below suggest an optimal model of 40 topics, however, a manual test showed thet topic models with 38 topics actually produced more intelligible topics. I therefore stuck with 38 topics for the subsequent step.
+```{r}
+# Find optimal number of topics with ldatuning package. NOTE: We ran a simulation with 0-100 topics in steps of 5 before and limited it to this range. For completeness sake, we also add the earlier simulation (running it might take up to 40 minutes, depending on number of cores)
+# detectCores()
+# set.seed(1234)
+# #result_first <- FindTopicsNumber(
+# #   dfm_s,
+# #   topics = seq(from = 5, to = 100, by = 5),
+# #   metrics = c("Griffiths2004", "CaoJuan2009", "Deveaud2014"),
+# #   method = "Gibbs",
+# #   control = list(verbose=T, seed = 1234, burnin = 50, iter = 200),
+# #   mc.cores = 7,
+# #   verbose = TRUE
+# # )
+# result <- FindTopicsNumber(
+#   dfm_s,
+#   topics = seq(from = 32, to = 40, by = 2),
+#   metrics = c("Griffiths2004", "CaoJuan2009", "Deveaud2014"),
+#   method = "Gibbs",
+#   control = list(verbose=T, seed = 1234, burnin = 50, iter = 200),
+#   mc.cores = detectCores()-1,
+#   verbose = TRUE
+# )
+
+#save(result, file = "result")
+load (file= "result")
+
+# Plot results
+#FindTopicsNumber_plot(result_first)
+FindTopicsNumber_plot(result)
+
+```
+## 3.1.3. Run topicmodel simulation
+Our topic model of the ECB corpus is the foundation for the dictionaries that I will present later, so let's call this model "TheMother". 
+```{r}
+#create topic model (38 topics is a good amount, we tried with other options and found this to be the most intelligible option)
+# set.seed(1993)
+# K <- 38
+# TheMother <- LDA(dfm_s, k = K, method = "Gibbs", 
+#                         control = list(verbose=25L, seed = 1234, burnin = 100, iter = 500))
+
+#save(TheMother, file = "TheMother")
+load((file = "TheMother"))
+terms_ecb = as.data.frame(terms(TheMother, 10))
+
+#save(TheMother, file = "data/ECBTopicModel")
+```
+## 3.1.4. Explore and identify topics
+From the literature on central banking, my colleague and I already identified three topics that would be relvant to track across time. These are: 1. Price stability (this is the core responsibility of the European Central Bank), 2. Emerging responsibilities (tasks that the ECB does not yet perform, but would like to perform in the future), and 3. Unconventional measures (to combat financial instability). We can track all of these in the topic models by looking for the topics that are most closely related to keywords that stand for each of these three topics. For the paper, I have of course used many more search terms, but for the sake of demonstration, I show how to identify the right topic for each of three of these key terms. 
+
+In the end, finding the right topics within the topic model will help us to reiteratively identify more key terms that we can then add to our dictionary for later. 
+```{r}
+#find right topic. We are using an example here related to core competencies. Based on the literature
+probs <- exp(TheMother@beta[,TheMother@terms=="stabil"])
+# normalizing so that probabilities add up to 1
+round(probs/sum(probs),3)
+
+#create a df with topic words and colnames with topic per word probabilities
+##stability
+probs <- round(exp(TheMother@beta[,TheMother@terms=="stabil"])/sum(exp(TheMother@beta[,TheMother@terms=="stabil"])),3)
+terms_stability <- as.data.frame(get_terms(TheMother, 50))
+colnames(terms_stability) <- round(probs/sum(probs),3)
+
+##new responsibilities
+probs <- round(exp(TheMother@beta[,TheMother@terms=="supervisori"])/sum(exp(TheMother@beta[,TheMother@terms=="supervisori"])),3)
+terms_newresp <- as.data.frame(get_terms(TheMother, 10))
+colnames(terms_newresp) <- round(probs/sum(probs),3)
+
+##unconventional measures
+probs <- round(exp(TheMother@beta[,TheMother@terms=="unconvent"])/sum(exp(TheMother@beta[,TheMother@terms=="unconvent"])),3)
+terms_uncon <- as.data.frame(get_terms(TheMother, 50))
+colnames(terms_uncon) <- round(probs/sum(probs),3)
+
+```
+## 3.1.4. Check topic presence across time
+Calculate average per year per document topic occurrence to get a feel for how the topic behaves. To illustrate, topic 23 is the strongest associated to core responsibilities (see df terms_stability)
+```{r}
+# Calculate average per year per document topic occurrence to get a feel for how the topic behaves. To illustrate, topic 23 is the strongest associated to core responsibilities (see df terms_stability)
+agg <- list()
+for (i in 1:38){
+  tidy$prob_topic <- TheMother@gamma[,i]
+  agg[[length(agg)+1]] <- aggregate(prob_topic~year, data=tidy, FUN=mean)
+}
+
+# ggplot
+ggplot(agg[[23]], aes(year, prob_topic, group = 1)) + geom_point() + geom_line() + ylab("average per-document occurrence") + ggtitle("LDA-based measurement of price stability in ECB communication")
+```
+
+## 3.2. clean News Corpus
+```{r}
+# Further clean corpus before running topic models: Remove whitespaces, lowercase, remove stopwords (also corpus specific), stem, remove Punctuation. For the task at hand (creating topic models), the removed features do not add any valuable information and only complicate calculating the topic models
+#save(Corpus_Media, file = "Corpus_Media")
+load(file = "Corpus_Media")
+news_corpus_clean <- tm_map(Corpus_Media, content_transformer(tolower))
+news_corpus_clean <- tm_map(news_corpus_clean, removeWords,
+                            stopwords("english"))
+news_corpus_clean <- tm_map(news_corpus_clean, stripWhitespace)
+news_corpus_clean <- tm_map(news_corpus_clean, stemDocument)
+news_corpus_clean <- tm_map(news_corpus_clean, removePunctuation)
+
+T_Corpus <- tidy(news_corpus_clean)%>%
+  unnest_tokens(word, text)
+
+Frequencies <- T_Corpus%>%
+  count(word, sort=TRUE) %>%
+  ungroup()
+
+# Edited Corpus with additional deleted terms and date and tidy
+news_corpus_clean_2<-tm_map(news_corpus_clean, removeWords, c("bank", "said", "mr.", "european", "central", "ecb"))
+T_Corpus_2 <- tidy(news_corpus_clean_2)%>% 
+  unnest_tokens(word, text)
+T_Corpus_2_complete<-tidy(news_corpus_clean_2)
+T_Corpus_2_complete$date <- as.POSIXct(T_Corpus_2_complete$datetimestamp, tz= "", format = "%Y-%m-%d")
+T_Corpus_2_complete$quarter <- lubridate::quarter(T_Corpus_2_complete$date, with_year=T)
+T_Corpus_2_complete$month <- format(as.Date(T_Corpus_2_complete$date), "%Y-%m")
+T_Corpus_2_complete$year <- format(as.Date(T_Corpus_2_complete$date), "%Y")
+
+```
+
+
+# 4. Dictionary construction
+Let's construct the topic dictionaries. I use the topic models as inspiration to construct robust dictionaries that reliably trace the three key issues that we are interested in.
+```{r eval=F}
+### I am using the same object names, so first run ECB and then run then Newspaper data 
+#################ECB frame detection#############################################################################
+
+library(dplyr)
+library(tidyverse)
+library(tidytext)
+
+### Frame definition
+frame_conventional <- c("stability", "stabil", "stabl", "stable", "stabilityori", "stabilis", "stabilised", "stabilisers", "inflat", "rate", "price", "currenc", "currency", "currencies")
+frame_unconventional <- c("measur", "stimulus", "purchas", "quantitativ", "eas", "unconvent", "unconventional", "conven", "convent", "convention", "conventional", "ass", "bond", "buy")
+frame_expansion <- c("supervis", "supervi", "SSM", "new", "expan", "mandat", "mandate", "mandates", "respons", "responsibility", "responsibility", "macroprudenti", "macro-prudent", "macro-prudenti")
+
+dict <- dictionary(list(frame_conventional = c("stability", "stabil", "stabl", "stable", "stabilityori", "stabilis", "stabilised", "stabilisers", "inflat", "rate", "price", "currenc", "currency", "currencies"),
+                        frame_unconventional = c("measur", "stimulus", "purchas", "quantitativ", "eas", "unconvent", "unconventional", "conven", "convent", "convention", "conventional", "ass", "bond", "buy"),
+                        frame_expansion = c("supervis", "supervi", "SSM", "new", "expan", "mandat", "mandate", "mandates", "respons", "responsibility", "responsibility", "macroprudenti", "macro-prudent", "macro-prudenti")))
+
+
+
+# Count occurrence of dictionary terms in ECB corpus (as percentage of total words, aggregated per month) 
+dict_ECB <- dfm_lookup(dfm_s, dictionary = dict)
+dict_ECB <- convert(dict_ECB, to = "data.frame")
+tidy$count_total <- rowSums(dfm_s)
+tidy[,c("Con","Uncon","Exp")] <- dict_ECB[,2:4]
+tidy$ratioConventional<- tidy$Con/tidy$count_total
+tidy$ratioUnconventional<- tidy$Uncon/tidy$count_total
+tidy$ratioExpansion<- tidy$Exp/tidy$count_total
+
+agg_ECB <-
+  aggregate(
+    list(
+      conventional = tidy$ratioConventional,
+      unconcentional = tidy$ratioUnconventional,
+      expansion = tidy$ratioExpansion
+    ),
+    by = list(year = tidy$year),
+    data = tidy,
+    FUN = mean
+  )
+
+agg_ECB_month = aggregate(
+  list(
+    conventional = tidy$ratioConventional,
+    unconventional = tidy$ratioUnconventional,
+    expansion = tidy$ratioExpansion
+  ),
+  by = list(year = tidy$month),
+  data = tidy,
+  FUN = mean
+)
+
+
+load("data/Clean_Tidy_Corpus")
+
+
+Frequency <- T_ECB_complete %>%
+  unnest_tokens(word, text)
+word_frequencies <- Frequency %>%
+  count(word, id) %>%
+  ungroup()%>%
+  bind_tf_idf(word, id, n)
+total_words <- word_frequencies%>%
+  group_by(id)%>%
+  summarize(total = sum(n))
+word_frequencies <- left_join(word_frequencies, total_words)
+word_frequencies <- word_frequencies %>%
+  mutate(percentage=(n/total))
+
+##take word counts
+total_c <- word_frequencies %>%
+  filter(word %in% frame_conventional)%>%
+  ungroup() %>%
+  mutate(type="c")
+
+total_u <- word_frequencies %>%
+  filter(word %in% frame_unconventional)%>%
+  ungroup() %>%
+  mutate(type="u")
+
+total_e <- word_frequencies %>%
+  filter(word %in% frame_expansion)%>%
+  ungroup() %>%
+  mutate(type="e")
+
+##attach dates
+dates <- T_ECB_complete[c("id", "date", "quarter", "month", "year")]
+
+total1_c <- inner_join(total_c, dates, by="id")
+total1_u <- inner_join(total_u, dates, by="id")
+total1_e <- inner_join(total_e, dates, by="id")
+
+##conventional
+total2_c <- total1_c%>%
+  group_by(id, year, month)%>%
+  summarize(overall =sum(tf))%>%
+  ungroup()
+total2_c_y <- total2_c %>%
+  group_by(year) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+total2_c_m <- total2_c %>%
+  group_by(month) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+
+##unconventional
+total2_u <- total1_u%>%
+  group_by(id, year, month)%>%
+  summarize(overall =sum(tf))%>%
+  ungroup()
+total2_u_y <- total2_u %>%
+  group_by(year) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+total2_u_m <- total2_u %>%
+  group_by(month) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+
+##expansion
+total2_e <- total1_e%>%
+  group_by(id, year, month)%>%
+  summarize(overall =sum(tf))%>%
+  ungroup()
+total2_e_y <- total2_e %>%
+  group_by(year) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+total2_e_m <- total2_e %>%
+  group_by(month) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+
+total_all_y <- data.frame(year = total2_c_y$year, c = total2_c_y$average, u = total2_u_y$average, e = total2_e_y$average)
+total_all_m <- full_join(total2_c_m, total2_u_m, by = "month")
+total_all_m <- full_join(total_all_m, total2_e_m, by = "month")
+names(total_all_m)[2] <- "c"
+names(total_all_m)[3] <- "u"
+names(total_all_m)[4] <- "e"
+
+
+##plot yearly averages
+ggplot(total_all_y, aes(year)) + 
+  geom_line(aes(y=c, colour = "Core responsibilities"), group = 1) + geom_point(aes(y=c, colour = "Core responsibilities"), group = 1)+
+  geom_line(aes(y = u, colour = "Unconventional measures"), group=2) + geom_point(aes(y=u, colour = "Unconventional measures"), group = 2)+
+  geom_line(aes(y = e, colour = "Expansion of responsibilities"), group=3) + geom_point(aes(y=e, colour = "Expansion of responsibilities"), group = 3)+
+  ggtitle("Ratio of frame words in ECB communication, per year") +
+  ylab("average per-document occurence")
+
+##plot monthly averages
+##start only at 1999
+total_all_m1999 <- total_all_m[23:256,]
+
+ggplot(total_all_m1999, aes(month)) + 
+  geom_line(aes(y=c, colour = "Core responsibilities"), group = 1) + 
+  geom_line(aes(y = u, colour = "Unconventional measures"), group=2) +
+  geom_line(aes(y = e, colour = "Expansion of responsibilities"), group=3) +
+  ggtitle("Percentage of frames in ECB communication, per month") 
+
+
+### Save series
+#save(total_all_m1999, file = "data/ECB_mframes_1999_tidy1")
+#save(total_all_m, file = "data/ECB_mframes_raw1")
+#save(total_all_y, file = "data/ECB_yframes_raw1")
+```
+Interesting! When looking at the plot that averages dictionary hits per year, we see that the ECB focuses a lot of their public communication on their core responsibility (i.e., price stability) when the organization was first founded. The focus then drops over the years and stabilizes around the year 2012. It communicates way less about the other two topics, but we see a stronger emphasis on these two topics with the start of the financial crisis in 2008. No wonder, the ECB was suddenly in the spotlight and needed to communicate that the organization was capable of solving the problems that the financial crisis and subsequently the banking crisis and Greek debt crisis brought onto the European financial system.
+
+
+
+```{r}
+
+#################Newspaper frame detection#############################################################################
+#Word frequencies
+load("data/tidy_corpus")
+T_Corpus_2_complete$UID <- c(1:5546)
+T_Corpus_2 <- T_Corpus_2_complete %>%
+  unnest_tokens(word, text)
+Frequency <- T_Corpus_2%>%
+  count(word)
+word_frequencies <- T_Corpus_2%>%
+  count(UID, word, sort=TRUE) %>%
+  ungroup()%>%
+  bind_tf_idf(word, UID, n)
+total_words <- word_frequencies%>%
+  group_by(UID)%>%
+  summarize(total = sum(n))
+word_frequencies <- left_join(word_frequencies, total_words)
+word_frequencies <- word_frequencies %>%
+  mutate(percentage=(n/total))
+
+## assemble frames, based on the lda words
+frame_conventional <- c("stability", "stabil", "stabl", "stable", "stabilityori", "stabilis", "stabilised", "stabilisers", "inflat", "rate", "price", "currenc", "currency", "currencies")
+frame_unconventional <- c("measur", "stimulus", "purchas", "quantitativ", "eas", "unconvent", "unconventional", "conven", "convent", "convention", "conventional", "ass", "bond", "buy")
+frame_expansion <- c("supervis", "supervi", "SSM", "new", "expan", "mandat", "mandate", "mandates", "respons", "responsibility", "responsibility", "macroprudenti")
+
+
+## word frequencies
+total_c <- word_frequencies %>%
+  filter(word %in% frame_conventional)%>%
+  ungroup() %>%
+  mutate(type="c")
+
+total_u <- word_frequencies %>%
+  filter(word %in% frame_unconventional)%>%
+  ungroup() %>%
+  mutate(type="u")
+
+total_e <- word_frequencies %>%
+  filter(word %in% frame_expansion)%>%
+  ungroup() %>%
+  mutate(type="e")
+
+dates <- T_Corpus_2_complete[c("id", "date", "quarter", "month", "year", "datetimestamp", "UID", "text")]
+
+total1_c <- inner_join(total_c, dates, by="UID")
+total1_u <- inner_join(total_u, dates, by="UID")
+total1_e <- inner_join(total_e, dates, by="UID")
+
+##conventional
+total2_c <- total1_c%>%
+  group_by(UID, year, month)%>%
+  summarize(overall =sum(tf))%>%
+  ungroup()
+total2_c_y <- total2_c %>%
+  group_by(year) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+total2_c_m <- total2_c %>%
+  group_by(month) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+
+##unconventional
+total2_u <- total1_u%>%
+  group_by(UID, year, month)%>%
+  summarize(overall =sum(tf))%>%
+  ungroup()
+total2_u_y <- total2_u %>%
+  group_by(year) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+total2_u_m <- total2_u %>%
+  group_by(month) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+
+##expansion
+total2_e <- total1_e%>%
+  group_by(UID, year, month)%>%
+  summarize(overall =sum(tf))%>%
+  ungroup()
+total2_e_y <- total2_e %>%
+  group_by(year) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+total2_e_m <- total2_e %>%
+  group_by(month) %>%
+  summarize(average = mean(overall))%>%
+  ungroup()
+
+News_total_all_y <- data.frame(year = total2_c_y$year, c = total2_c_y$average, u = total2_u_y$average, e = total2_e_y$average)
+News_total_all_m <- full_join(total2_c_m, total2_u_m, by = "month")
+News_total_all_m <- full_join(News_total_all_m, total2_e_m, by = "month")
+names(News_total_all_m)[2] <- "c"
+names(News_total_all_m)[3] <- "u"
+names(News_total_all_m)[4] <- "e"
+News_total_all_m$average <- NULL
+
+###Plot yearly averages
+
+ggplot(News_total_all_y, aes(year)) + 
+  geom_line(aes(y=c, colour = "Core responsibilities"), group = 1) + geom_point(aes(y=c, colour = "Core responsibilities"), group = 1)+
+  geom_line(aes(y = u, colour = "Unconventional measures"), group=2) + geom_point(aes(y=u, colour = "Unconventional measures"), group = 2)+
+  geom_line(aes(y = e, colour = "Expansion of responsibilities"), group=3) + geom_point(aes(y=e, colour = "Expansion of responsibilities"), group = 3)+
+  ggtitle("Ratio of frame words in Media communication, per year") +
+  ylab("average per-document occurence")
+
+##plot monthly averages
+ggplot(News_total_all_m, aes(month)) + 
+  geom_line(aes(y=c, colour = "Core responsibilities"), group = 1) + 
+  geom_line(aes(y = u, colour = "Unconventional measures"), group=2) +
+  geom_line(aes(y = e, colour = "Expansion of responsibilities"), group=3) +
+  ggtitle("Percentage of frames in Media communication, per month") 
+
+### Save series
+#save(News_total_all_y, file = "data/News_yframes_raw1")
+#save(News_total_all_m, file = "data/News_mframes_raw1")
+```
+Now it gets fascinating! When comparing the dictionary hits between the ECB and newspaper corpora, we see a broadly similar trend of the topics. Just like the ECB, the newspapers also focus much more on the ECB's core responsibility when the ECB was founded. However,the newspapers seem to react much more explosively to the financial crisis in 2008. The topic of unconventional measures that the ECB is using shoots up and even surpasses the topic of core responsibilities. However, the topic of expansion of responsibilities remains broadly untouched. After this exploratory analysis, we are ready to tackle the core question of this exercise: How does ECB public communication influence media reporting and how does media reporting influence ECB public communication?
+
+To test this, we first have to transfer the dictionary hits (i.e., word counts) to time series data. 
+# 5. VAR analysis 
+## 5.1. Transfer counts to time series data
+```{r eval=F}
+library(zoo)
+library(dplyr)
+
+# Load datasets
+## ECB
+load("data/ECB_frames1")
+ECB.frames <- abc ## Is already in time series format
+
+load("data/ECB_mframes_1999_tidy1") ## still in tidy
+## Newspaper corpus
+load("data/News_mframes_raw1")
+News_total_all_m
+
+names(News_total_all_m)[2] <- "News.c"
+names(News_total_all_m)[3] <- "News.u"
+names(News_total_all_m)[4] <- "News.e"
+
+## add Financial stress indicator (CLIFS, origin:ECB)
+load("data/FSI_month")
+names(FS)[1] <- "month"
+FS$Year <- NULL
+
+#add ECB leadership
+leadership_values <- aggregate(as.numeric(leadership)~month, data=tidy, FUN=mean)
+total_all_m1999 <- full_join(total_all_m1999, leadership_values,by="month")
+## Combine datasets
+complete <- full_join(total_all_m1999, News_total_all_m, by = "month")
+complete <- complete[25:228,]
+complete <- full_join(complete, FS, by = "month")
+names(complete)[5] <- "leadership"
+complete$leadership <- as.factor(complete$leadership)
+## Replace NAs with priors
+complete <- na.locf(complete, fromLast = FALSE)
+
+##add economic policy uncertainty score (policyuncertainty.com)
+PU <- read.csv(file = "data/Policy_Uncertainty_Data.csv", header=T, sep= ",", stringsAsFactors = F)
+PU$Year <- as.numeric(PU$Year)
+PU <- PU[(PU$Year >= 2001) & (PU$Year < 2018) & (!is.na(PU$Year)),]
+complete$PU <- PU$European_News_Index
+complete$binaryPU <- ifelse(complete$PU>150, 1, 0)
+
+##add systemic stress indicator (CISS, origin:ECB)
+CISS <- read.csv(file = "data/CISS.csv", header=T, sep= ",", stringsAsFactors = F)
+colnames(CISS) <- c("date", "CISS")
+CISS$date <- as.Date(CISS$date, format = "%m/%d/%Y")
+CISS$month <- format(CISS$date, "%Y-%m")
+CISS.average <- CISS %>%
+  group_by(month)%>%
+  mutate(CISS = mean(CISS))%>%
+  distinct(month, CISS)
+CISS.average <- arrange(CISS.average, -row_number())
+complete$CISS <- CISS.average$CISS
+## save dataframe
+#save(complete, file = "data/all_measures_dataframe1")
+#load("data/all_measures_dataframe1")
+```
+## 5.2. Conduct VAR analysis
+Below are the time series plots of the 6 time series back to back. For instance, the top row shows the topic development of "Core responsibilities" across time - left for the ECB, right for the Newspaper corpus
+```{r eval=F}
+# VAR
+## Creating time series datasets
+complete$month <- as.yearmon(CISS.average$month, "%Y-%m")
+complete.df <- as.data.frame(complete)
+rownames(complete.df) <- complete.df$month
+complete.df$month <- NULL
+
+
+
+test <- ts(complete.df)
+time_series <- ts(complete.df, start = c(2001,1), frequency = 12)
+
+
+#save(time_series, file = "data/time_series1")
+load("data/time_series1")
+
+# plot smoothed time series
+library(TTR)
+names <- c("ECB:Core", "ECB:Unconventional", "ECB:Expansion", "News:Core", "News:Unconventional", "News:Expansion")
+smooth <- as.data.frame(SMA(time_series[,1], n=6))
+for (i in 1:6){
+  smooth[,i] <- as.data.frame(SMA(time_series[,i], n=6))
+}
+colnames(smooth) <- names
+smooth <- ts(smooth, start = c(2001,1), frequency = 12)
+
+# Figure 2
+#save(smooth, file = "smooth_timeseries")
+load(file = "smooth_timeseries")
+plot(smooth, main=" ", xlab= " ", cex.lab =0.8)
+title(main ="Frame development", sub="y-axis displays fraction of frame words amongst overall wordscount")
+```
+
+# Conduct time series checks
+Before we compute impulse-response functions, we need to test whether the time series data fulfills all the statistical requirements so we can run these tests on it. We need to ensure stationarity and exclude the possibility of autocorrelation. The tests show that all requirements are met!
+```{r}
+
+## run VAR with monthly data
+###check stationarity (Dickey-Fuller)
+#library(TTR)
+#library(tseries)
+#tseries::adf.test(time_series[,7], alternative = "stationary", k=0)
+#library(aTSA)
+#stationary.test(time_series[,7], nlag = 3, method = "adf")
+
+## check autocorrelation with portmanneau (deprecated)
+#library(portes)
+#portest(var.1)
+```
+
+# Compute VAR models
+Since all the requirements are met, we can compute our VAR models. Every VAR model contains two time series - in our case the time series of topic occurrences within the ECB and Newspapers. Within the VAR models, we let the model metrics determine the amount of time lags (in months, up to three months) by setting lag.max to 3. We also control for the impact of the financial crises by including a well known measure of economic policy uncertainty (link is in code)
+```{r}
+load(file="data/complete.RData")
+## causality test
+###subset c, e, u time series (the three topics Conventional measures, Expansion of responsibilities, Unconventional measures)
+subset.c <- ts(data.frame(ECB.core_responsibilities = complete$c, News.core_responsibilities = complete$News.c))
+subset.e <- ts(data.frame(ECB.expansion_responsibilities = complete$e, News.expansion_responsibilities = complete$News.e))
+subset.u <- ts(data.frame(ECB.unconventional_measures = complete$u, News.unconventional_measures = complete$News.u))
+
+
+## Build VAR models - we control for the influence of the financial crisis by including a renown measure of policy uncertainty ( https://www.policyuncertainty.com/ ) 
+v.c <- VAR(subset.c, type="none", lag.max = 3, ic="AIC", exogen = cbind(test = complete$PU))
+v.e <- VAR(subset.e, type="none", lag.max = 3, ic="AIC", exogen = cbind(test = complete$PU))
+v.u <- VAR(subset.u, type="none", lag.max = 3, ic="AIC", exogen = cbind(test = complete$PU))
+
+
+summary(v.c)
+summary(v.e)
+summary(v.u)
+```
+
+# Conduct Granger causality tests
+Do ECB and media reporting influence each other? To test this, I conduct Granger causality tests. This is not an absolute test of causal influence, but it does give indication whether the occurrence of Topic A in the ECB helps to better predict the occurrence of topic A in the Newspaper corpus.
+
+All Granger causality tests except one are significantly positive (based on the p-value), which means that in these cases, ECB reporting influences newspaper reporting and vice versa. However, for the use of the "unconventional measures topic", only the newspapers' use of the topic seems to invoke a response by the ECB. This relationship does not hold the other way around (i.e., the ECB does not seem to strongly influence the news media). If we do not control for the Economic uncertainty, this Granger causality test also becomes statistically significant. We should therefore not draw too many conclusions out of this finding, as it seems to be quite sensitive to outside factors. By and large, the ECB and the news media seem to strongly impact each other when it comes to their communication.
+
+```{r}
+###causality tests
+causality(v.c, cause = "ECB.core_responsibilities")
+causality(v.c, cause = "News.core_responsibilities")
+causality(v.e, cause = "ECB.expansion_responsibilities")
+causality(v.e, cause = "News.expansion_responsibilities")
+causality(v.u, cause = "ECB.unconventional_measures")
+causality(v.u, cause = "News.unconventional_measures")
+```
+# Impulse-response functions
+How strong do ECB and the news media influence each other? To test this, I compute impulse-response functions. These functions test how a shock in a time series impacts the other time series in the model. This means: For example, if the ECB suddenly increases their communication about a certain topic, how does this influence the newspapers' use of the same topic in the subsequent months. To calculate the effect size in a way that makes sense for us, we need to do some transformations with the output of the impulse-response functions.
+```{r}
+#impulse response function
+#Create irf, then set shocksize(one forecast error variance) of impulse variable to 100 to get percentage change of response variable
+set.seed(1234)
+
+#ECB.core_responsilities
+irf_vc = irf(v.c, impulse = "ECB.core_responsibilities", response = "News.core_responsibilities", ortho=T)
+irf_vc$irf$ECB.core_responsibilities <- (irf_vc$irf$ECB.core_responsibilities/summary(v.c)$varresult$News.core_responsibilities$sigma)*100
+irf_vc$Lower$ECB.core_responsibilities <-(irf_vc$Lower$ECB.core_responsibilities/summary(v.c)$varresult$News.core_responsibilities$sigma)*100
+irf_vc$Upper$ECB.core_responsibilities <-(irf_vc$Upper$ECB.core_responsibilities/summary(v.c)$varresult$News.core_responsibilities$sigma)*100
+plot(irf_vc)
+
+#News.core_responsilities
+irf_vc = irf(v.c, impulse = "News.core_responsibilities", response = "ECB.core_responsibilities", ortho=T)
+irf_vc$irf$News.core_responsibilities <- (irf_vc$irf$News.core_responsibilities/summary(v.c)$varresult$ECB.core_responsibilities$sigma)*100
+irf_vc$Lower$News.core_responsibilities <-(irf_vc$Lower$News.core_responsibilities/summary(v.c)$varresult$ECB.core_responsibilities$sigma)*100
+irf_vc$Upper$News.core_responsibilities <-(irf_vc$Upper$News.core_responsibilities/summary(v.c)$varresult$ECB.core_responsibilities$sigma)*100
+plot(irf_vc)
+
+#ECB.expansion_responsilities
+irf_ve = irf(v.e, impulse = "ECB.expansion_responsibilities", response = "News.expansion_responsibilities", ortho=T)
+irf_ve$irf$ECB.expansion_responsibilities <- (irf_ve$irf$ECB.expansion_responsibilities/summary(v.e)$varresult$News.expansion_responsibilities$sigma)*100
+irf_ve$Lower$ECB.expansion_responsibilities <-(irf_ve$Lower$ECB.expansion_responsibilities/summary(v.e)$varresult$News.expansion_responsibilities$sigma)*100
+irf_ve$Upper$ECB.expansion_responsibilities <-(irf_ve$Upper$ECB.expansion_responsibilities/summary(v.e)$varresult$News.expansion_responsibilities$sigma)*100
+plot(irf_ve)
+
+#News.expansion_responsibilities
+irf_ve = irf(v.e, impulse = "News.expansion_responsibilities", response = "News.expansion_responsibilities", ortho=T)
+irf_ve$irf$News.expansion_responsibilities <- (irf_ve$irf$News.expansion_responsibilities/summary(v.e)$varresult$ECB.expansion_responsibilities$sigma)*100
+irf_ve$Lower$News.expansion_responsibilities <-(irf_ve$Lower$News.expansion_responsibilities/summary(v.e)$varresult$ECB.expansion_responsibilities$sigma)*100
+irf_ve$Upper$News.expansion_responsibilities <-(irf_ve$Upper$News.expansion_responsibilities/summary(v.e)$varresult$ECB.expansion_responsibilities$sigma)*100
+plot(irf_ve)
+
+#ECB.unconventional_measures
+irf_vu = irf(v.u, impulse = "ECB.unconventional_measures", response = "News.unconventional_measures", ortho=T)
+irf_vu$irf$ECB.unconventional_measures <- (irf_vu$irf$ECB.unconventional_measures/summary(v.u)$varresult$News.unconventional_measures$sigma)*100
+irf_vu$Lower$ECB.unconventional_measures <-(irf_vu$Lower$ECB.unconventional_measures/summary(v.u)$varresult$News.unconventional_measures$sigma)*100
+irf_vu$Upper$ECB.unconventional_measures <-(irf_vu$Upper$ECB.unconventional_measures/summary(v.u)$varresult$News.unconventional_measures$sigma)*100
+plot(irf_vu)
+
+#News.unconventional_responsibilities
+irf_vu = irf(v.u, impulse = "News.unconventional_measures", response = "News.unconventional_measures", ortho=T)
+irf_vu$irf$News.unconventional_measures <- (irf_vu$irf$News.unconventional_measures/summary(v.u)$varresult$ECB.unconventional_measures$sigma)*100
+irf_vu$Lower$News.unconventional_measures <-(irf_vu$Lower$News.unconventional_measures/summary(v.u)$varresult$ECB.unconventional_measures$sigma)*100
+irf_vu$Upper$News.unconventional_measures <-(irf_vu$Upper$News.unconventional_measures/summary(v.u)$varresult$ECB.unconventional_measures$sigma)*100
+plot(irf_vu)
+```
+What do we see here? The Y-axis always describes the change in the response variable in %. Let's look at the first figure "Orthogonal Impulse Response from ECB.core_responsibilities". The figure shows that if the ECB suddenly increases the use of the 'core responsibility' topic by 100%, the newspapers will also increase the use of the same topics in month 1 - by about 25%. There are a couple of takeaways here:
+
+1. The ECB reacts much more explosively to changes in newspaper reporting than the newspapers react to the ECB. 
+2. This becomes especially pronounced for the unconventional measures frame. This makes sense, as unconventional banking measures likely require much more explanation by the central bank than the other topics, that are more 'constant' in their nature
+
+This document gives a quick overview of how we can use a combination of methodologies in an unconventional manner to yield interesting results. Of course there is much more that we could do with the data, but to limit the scope of this overview, we will leve it at that. 
+
+
