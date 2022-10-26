@@ -18,3 +18,5 @@ I followed the following strategy:
 
 
 For an easy runthrough with comments, find the rMarkdown file here: https://htmlpreview.github.io/?https://github.com/MoritzMuller/Portfolio1_NLPTimeSeriesAnalysis/blob/main/ECB_portfolio.html
+
+If you want to run the analysis locally, you can do this via the dedicated replication repository here: https://github.com/MoritzMuller/ECB_CentralBankCommuncationAnalysis
